@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { 
   Users, 
   AlertTriangle, 
@@ -12,18 +12,26 @@ import {
   RotateCcw, 
   Send, 
   ChevronRight, 
-  Sparkles,
-  ArrowUpDown,
-  Stethoscope,
-  Terminal,
-  Clock,
-  ShieldAlert
+  Sparkles, 
+  ArrowUpDown, 
+  Stethoscope, 
+  Terminal, 
+  Clock, 
+  ShieldAlert,
+  Database,
+  Radio,
+  Copy,
+  Check,
+  RefreshCw,
+  ExternalLink
 } from 'lucide-react';
 import PatientDetailModal from './PatientDetailModal';
 import AirGapModal from './AirGapModal';
 import SyncConsoleModal from './SyncConsoleModal';
 import { resetDatabase } from '../db';
-import { playKeypadBeep } from '../utils/audioAlert';
+import { playKeypadBeep, playScanSuccessSound, playRedAlertSound } from '../utils/audioAlert';
+import { supabase, isSupabaseConfigured, SUPABASE_PATIENTS_TABLE_SQL } from '../supabaseClient';
+import { calculateMEWS } from '../utils/mews';
 
 export default function HospitalDashboard({ 
   patients = [], 
@@ -37,10 +45,158 @@ export default function HospitalDashboard({
   const [selectedPatient, setSelectedPatient] = useState(null);
   const [qrModalPatient, setQrModalPatient] = useState(null);
   const [showSyncConsole, setShowSyncConsole] = useState(false);
+  const [showSqlModal, setShowSqlModal] = useState(false);
+  const [copiedSql, setCopiedSql] = useState(false);
 
-  // Filter patients by tab and search
+  // Cloud telemetry states
+  const [cloudPatients, setCloudPatients] = useState([]);
+  const [dataSource, setDataSource] = useState('HYBRID'); // 'HYBRID' | 'CLOUD_ONLY' | 'LOCAL_ONLY'
+  const [isCloudLoading, setIsCloudLoading] = useState(false);
+  const [realtimeActive, setRealtimeActive] = useState(false);
+
+  // Fetch telemetry records directly from Supabase
+  const fetchSupabasePatients = useCallback(async () => {
+    if (!isSupabaseConfigured || (typeof navigator !== 'undefined' && !navigator.onLine)) {
+      return;
+    }
+
+    setIsCloudLoading(true);
+    try {
+      const { data, error } = await supabase
+        .from('patients')
+        .select('*')
+        .order('created_at', { ascending: false });
+
+      if (error) {
+        console.warn('Supabase query notice:', error.message);
+        return;
+      }
+
+      if (data && Array.isArray(data)) {
+        const mapped = data.map((row) => {
+          const vitals = row.vitals || {};
+          const mewsCalc = calculateMEWS(vitals);
+          return {
+            id: `cloud-${row.id}`,
+            patientUuid: row.patient_uuid,
+            triageId: row.triage_id || `TRIAGE-${row.id}`,
+            name: row.name,
+            age: row.age,
+            sex: row.gender || 'Unknown',
+            chiefComplaint: row.chief_complaint,
+            allergies: row.allergies || 'NKDA',
+            medicalHistory: row.medical_history || '',
+            vitals,
+            mews: {
+              score: row.mews_score ?? mewsCalc.score,
+              level: row.level || mewsCalc.level,
+              breakdown: mewsCalc.breakdown,
+              clinicalAction: mewsCalc.clinicalAction,
+              urgencyLabel: mewsCalc.urgencyLabel,
+              responseTime: mewsCalc.responseTime,
+              styleClasses: mewsCalc.styleClasses,
+            },
+            level: row.level || mewsCalc.level,
+            synced: 1,
+            timestamp: new Date(row.created_at || row.synced_at).getTime(),
+            originUnit: row.origin_unit || 'District Cloud Feed',
+            opticalTransfers: row.optical_transfers || 0,
+            isFromCloud: true,
+          };
+        });
+
+        setCloudPatients(mapped);
+      }
+    } catch (err) {
+      console.warn('Error fetching Supabase patients:', err);
+    } finally {
+      setIsCloudLoading(false);
+    }
+  }, []);
+
+  // Supabase Realtime channel subscription
+  useEffect(() => {
+    if (!isSupabaseConfigured || (typeof navigator !== 'undefined' && !navigator.onLine)) {
+      setRealtimeActive(false);
+      return;
+    }
+
+    fetchSupabasePatients();
+
+    let channel = null;
+    try {
+      channel = supabase
+        .channel('public:patients')
+        .on(
+          'postgres_changes',
+          { event: '*', schema: 'public', table: 'patients' },
+          (payload) => {
+            fetchSupabasePatients();
+            
+            if (payload.eventType === 'INSERT') {
+              playScanSuccessSound();
+              const newPt = payload.new;
+              if (newPt?.level === 'RED') {
+                playRedAlertSound();
+              }
+              if (onShowToast) {
+                onShowToast(`REALTIME TELEMETRY: New patient ${newPt?.name || 'Emergency'} received from cloud!`);
+              }
+            }
+          }
+        )
+        .subscribe((status) => {
+          if (status === 'SUBSCRIBED') {
+            setRealtimeActive(true);
+          } else {
+            setRealtimeActive(false);
+          }
+        });
+    } catch (err) {
+      console.warn('Realtime subscription error:', err);
+    }
+
+    return () => {
+      if (channel) {
+        supabase.removeChannel(channel);
+      }
+    };
+  }, [fetchSupabasePatients, onShowToast]);
+
+  // Combine and deduplicate records based on patientUuid
+  const combinedPatients = useMemo(() => {
+    if (dataSource === 'CLOUD_ONLY') {
+      return cloudPatients;
+    }
+    if (dataSource === 'LOCAL_ONLY') {
+      return patients;
+    }
+
+    // HYBRID MODE: Merge Supabase cloud records with local IndexedDB records
+    const localMap = new Map();
+    patients.forEach((p) => localMap.set(p.patientUuid, p));
+
+    // For any cloud record, if local exists and is unsynced, keep local state; otherwise cloud record
+    const merged = [...patients];
+    cloudPatients.forEach((cp) => {
+      const existingIdx = merged.findIndex((p) => p.patientUuid === cp.patientUuid);
+      if (existingIdx !== -1) {
+        // If local is synced, replace with cloud record
+        if (merged[existingIdx].synced === 1) {
+          merged[existingIdx] = cp;
+        }
+      } else {
+        // New patient registered from another device
+        merged.push(cp);
+      }
+    });
+
+    return merged.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+  }, [patients, cloudPatients, dataSource]);
+
+  // Filter patients by tab and search query
   const filteredPatients = useMemo(() => {
-    return patients.filter((patient) => {
+    return combinedPatients.filter((patient) => {
       // Tab filter
       if (activeTab === 'RED' && patient.level !== 'RED') return false;
       if (activeTab === 'YELLOW' && patient.level !== 'YELLOW') return false;
@@ -59,32 +215,132 @@ export default function HospitalDashboard({
 
       return true;
     });
-  }, [patients, activeTab, searchQuery]);
+  }, [combinedPatients, activeTab, searchQuery]);
 
   // Aggregate KPI metrics
-  const totalCount = patients.length;
-  const redCount = patients.filter((p) => p.level === 'RED').length;
-  const yellowCount = patients.filter((p) => p.level === 'YELLOW').length;
-  const greenCount = patients.filter((p) => p.level === 'GREEN').length;
-  const unsyncedCount = patients.filter((p) => p.synced === 0).length;
+  const totalCount = combinedPatients.length;
+  const redCount = combinedPatients.filter((p) => p.level === 'RED').length;
+  const yellowCount = combinedPatients.filter((p) => p.level === 'YELLOW').length;
+  const greenCount = combinedPatients.filter((p) => p.level === 'GREEN').length;
+  const unsyncedCount = combinedPatients.filter((p) => p.synced === 0).length;
 
   const avgMEWS = useMemo(() => {
-    if (patients.length === 0) return '0.0';
-    const sum = patients.reduce((acc, p) => acc + (p.mews?.score || 0), 0);
-    return (sum / patients.length).toFixed(1);
-  }, [patients]);
+    if (combinedPatients.length === 0) return '0.0';
+    const sum = combinedPatients.reduce((acc, p) => acc + (p.mews?.score || 0), 0);
+    return (sum / combinedPatients.length).toFixed(1);
+  }, [combinedPatients]);
 
   const handleResetDemoData = async () => {
-    if (confirm('Reset database back to standard demonstration telemetry dataset?')) {
+    if (confirm('Reset local database back to standard demonstration telemetry dataset?')) {
       await resetDatabase();
       if (onRefresh) onRefresh();
       if (onShowToast) onShowToast('Database reset to clean demo state.');
     }
   };
 
+  const copySqlSchema = async () => {
+    try {
+      await navigator.clipboard.writeText(SUPABASE_PATIENTS_TABLE_SQL);
+      setCopiedSql(true);
+      setTimeout(() => setCopiedSql(false), 2500);
+      if (onShowToast) onShowToast('Supabase SQL Migration copied to clipboard!');
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
   return (
     <div className="space-y-6">
       
+      {/* Top Telemetry Data-Source Bar */}
+      <div className="bg-slate-900/90 border border-slate-800 rounded-xl p-3 sm:p-4 backdrop-blur-md shadow-lg flex flex-col md:flex-row md:items-center justify-between gap-3">
+        <div className="flex items-center gap-3">
+          <div className={`p-2.5 rounded-lg border flex items-center justify-center ${
+            realtimeActive
+              ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30'
+              : isSupabaseConfigured
+              ? 'bg-cyan-500/10 text-cyan-400 border-cyan-500/30'
+              : 'bg-amber-500/10 text-amber-400 border-amber-500/30'
+          }`}>
+            <Database className="w-5 h-5" />
+          </div>
+
+          <div>
+            <div className="flex items-center gap-2">
+              <h3 className="text-xs font-mono font-bold uppercase tracking-wider text-white">
+                Telemetry Pipeline: {isSupabaseConfigured ? 'Supabase PostgreSQL Cloud' : 'Offline Air-Gap (Dexie)'}
+              </h3>
+              <span className={`px-2 py-0.5 text-[10px] font-mono font-bold rounded-full border ${
+                realtimeActive
+                  ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40 animate-pulse'
+                  : isSupabaseConfigured
+                  ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/40'
+                  : 'bg-amber-500/20 text-amber-300 border-amber-500/40'
+              }`}>
+                {realtimeActive ? 'REALTIME STREAMING' : isSupabaseConfigured ? 'ONLINE (POLLING)' : 'AIR-GAP ISOLATED'}
+              </span>
+            </div>
+            <p className="text-[11px] text-slate-400 font-mono mt-0.5">
+              {isSupabaseConfigured 
+                ? 'Bi-directional replication enabled. Receiving field worker updates across nodes.'
+                : 'Zero external cloud credentials configured in .env. Operating with 100% resilient IndexedDB.'}
+            </p>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2">
+          {/* Data Source Segmented Toggle */}
+          <div className="bg-slate-950 p-1 rounded-lg border border-slate-800 flex items-center text-[11px] font-mono">
+            <button
+              type="button"
+              onClick={() => { playKeypadBeep(); setDataSource('HYBRID'); }}
+              className={`px-2.5 py-1 rounded transition ${
+                dataSource === 'HYBRID' ? 'bg-cyan-600 text-white font-bold' : 'text-slate-400 hover:text-white'
+              }`}
+            >
+              Hybrid
+            </button>
+            <button
+              type="button"
+              onClick={() => { playKeypadBeep(); setDataSource('CLOUD_ONLY'); }}
+              className={`px-2.5 py-1 rounded transition ${
+                dataSource === 'CLOUD_ONLY' ? 'bg-cyan-600 text-white font-bold' : 'text-slate-400 hover:text-white'
+              }`}
+            >
+              Cloud ({cloudPatients.length})
+            </button>
+            <button
+              type="button"
+              onClick={() => { playKeypadBeep(); setDataSource('LOCAL_ONLY'); }}
+              className={`px-2.5 py-1 rounded transition ${
+                dataSource === 'LOCAL_ONLY' ? 'bg-cyan-600 text-white font-bold' : 'text-slate-400 hover:text-white'
+              }`}
+            >
+              Local ({patients.length})
+            </button>
+          </div>
+
+          <button
+            type="button"
+            onClick={fetchSupabasePatients}
+            disabled={isCloudLoading}
+            title="Refresh Supabase cloud feed"
+            className="p-2 bg-slate-950 hover:bg-slate-800 text-slate-300 hover:text-white rounded-lg border border-slate-800 transition"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${isCloudLoading ? 'animate-spin text-cyan-400' : ''}`} />
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setShowSqlModal(true)}
+            className="px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-cyan-300 text-xs font-mono rounded-lg transition border border-slate-700 flex items-center gap-1.5 whitespace-nowrap"
+          >
+            <Database className="w-3.5 h-3.5" />
+            <span>SQL Schema</span>
+          </button>
+        </div>
+      </div>
+
       {/* KPI Stat Cards Bar */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         
@@ -103,7 +359,7 @@ export default function HospitalDashboard({
               {totalCount}
             </span>
             <span className="text-xs font-mono text-slate-500">
-              Patients Registered
+              Patients In Queue
             </span>
           </div>
           <div className="mt-3 flex items-center gap-1.5 text-[11px] font-mono text-slate-400">
@@ -161,7 +417,7 @@ export default function HospitalDashboard({
           </div>
           <div className="mt-3 flex items-center justify-between">
             <span className="text-[11px] font-mono text-slate-500">
-              {isAirGapMode ? 'Air-Gap Isolation Active' : 'Online / District Linked'}
+              {isAirGapMode ? 'Air-Gap Isolation Active' : 'District Linked'}
             </span>
             <button
               type="button"
@@ -208,7 +464,7 @@ export default function HospitalDashboard({
             <button
               type="button"
               onClick={() => { playKeypadBeep(); setActiveTab('ALL'); }}
-              className={`px-3 py-1.5 rounded-lg text-xs font-mono font-bold transition flex items-center gap-1.5 whitespace-nowrap ${
+              className={`px-3 py-1.5 rounded-lg text-xs font-mono font-bold transition flex items-center gap-1.5 whitespace-nowrap cursor-pointer ${
                 activeTab === 'ALL'
                   ? 'bg-slate-700 text-white shadow-sm'
                   : 'bg-slate-950 text-slate-400 hover:text-white border border-slate-800'
@@ -223,7 +479,7 @@ export default function HospitalDashboard({
             <button
               type="button"
               onClick={() => { playKeypadBeep(); setActiveTab('RED'); }}
-              className={`px-3 py-1.5 rounded-lg text-xs font-mono font-bold transition flex items-center gap-1.5 whitespace-nowrap ${
+              className={`px-3 py-1.5 rounded-lg text-xs font-mono font-bold transition flex items-center gap-1.5 whitespace-nowrap cursor-pointer ${
                 activeTab === 'RED'
                   ? 'bg-rose-600 text-white shadow-sm shadow-rose-950'
                   : 'bg-slate-950 text-rose-400 hover:text-rose-300 border border-slate-800'
@@ -238,7 +494,7 @@ export default function HospitalDashboard({
             <button
               type="button"
               onClick={() => { playKeypadBeep(); setActiveTab('YELLOW'); }}
-              className={`px-3 py-1.5 rounded-lg text-xs font-mono font-bold transition flex items-center gap-1.5 whitespace-nowrap ${
+              className={`px-3 py-1.5 rounded-lg text-xs font-mono font-bold transition flex items-center gap-1.5 whitespace-nowrap cursor-pointer ${
                 activeTab === 'YELLOW'
                   ? 'bg-amber-600 text-white shadow-sm'
                   : 'bg-slate-950 text-amber-400 hover:text-amber-300 border border-slate-800'
@@ -253,7 +509,7 @@ export default function HospitalDashboard({
             <button
               type="button"
               onClick={() => { playKeypadBeep(); setActiveTab('GREEN'); }}
-              className={`px-3 py-1.5 rounded-lg text-xs font-mono font-bold transition flex items-center gap-1.5 whitespace-nowrap ${
+              className={`px-3 py-1.5 rounded-lg text-xs font-mono font-bold transition flex items-center gap-1.5 whitespace-nowrap cursor-pointer ${
                 activeTab === 'GREEN'
                   ? 'bg-emerald-600 text-white shadow-sm'
                   : 'bg-slate-950 text-emerald-400 hover:text-emerald-300 border border-slate-800'
@@ -268,7 +524,7 @@ export default function HospitalDashboard({
             <button
               type="button"
               onClick={() => { playKeypadBeep(); setActiveTab('UNSYNCED'); }}
-              className={`px-3 py-1.5 rounded-lg text-xs font-mono font-bold transition flex items-center gap-1.5 whitespace-nowrap ${
+              className={`px-3 py-1.5 rounded-lg text-xs font-mono font-bold transition flex items-center gap-1.5 whitespace-nowrap cursor-pointer ${
                 activeTab === 'UNSYNCED'
                   ? 'bg-cyan-600 text-white shadow-sm'
                   : 'bg-slate-950 text-cyan-400 hover:text-cyan-300 border border-slate-800'
@@ -344,7 +600,7 @@ export default function HospitalDashboard({
 
                   return (
                     <tr
-                      key={patient.id}
+                      key={patient.id || patient.patientUuid}
                       onClick={() => setSelectedPatient(patient)}
                       className={`hover:bg-slate-800/40 transition cursor-pointer group ${
                         isRed ? 'bg-rose-950/10' : ''
@@ -373,8 +629,13 @@ export default function HospitalDashboard({
 
                       {/* Patient Dossier */}
                       <td className="py-3 px-4">
-                        <div className="font-bold text-white group-hover:text-cyan-300 transition">
-                          {patient.name}
+                        <div className="font-bold text-white group-hover:text-cyan-300 transition flex items-center gap-2">
+                          <span>{patient.name}</span>
+                          {patient.isFromCloud && (
+                            <span className="px-1.5 py-0.2 rounded bg-cyan-950/80 text-cyan-300 border border-cyan-800 text-[9px] font-mono font-normal">
+                              Cloud
+                            </span>
+                          )}
                         </div>
                         <div className="text-[11px] font-mono text-slate-400">
                           {patient.age}y • {patient.sex} • <span className="text-cyan-400">{patient.triageId}</span>
@@ -412,7 +673,7 @@ export default function HospitalDashboard({
                         {patient.synced ? (
                           <div className="flex items-center gap-1.5 text-emerald-400 font-mono text-[11px]">
                             <Cloud className="w-3.5 h-3.5" />
-                            <span>District Cloud</span>
+                            <span>{patient.isFromCloud ? 'Supabase Realtime' : 'District Cloud'}</span>
                           </div>
                         ) : (
                           <div className="flex items-center gap-1.5 text-amber-400 font-mono text-[11px]">
@@ -460,8 +721,14 @@ export default function HospitalDashboard({
         <PatientDetailModal
           patient={selectedPatient}
           onClose={() => setSelectedPatient(null)}
-          onUpdated={onRefresh}
-          onDeleted={onRefresh}
+          onUpdated={() => {
+            if (onRefresh) onRefresh();
+            fetchSupabasePatients();
+          }}
+          onDeleted={() => {
+            if (onRefresh) onRefresh();
+            fetchSupabasePatients();
+          }}
           onShowToast={onShowToast}
         />
       )}
@@ -481,9 +748,86 @@ export default function HospitalDashboard({
         onClose={() => setShowSyncConsole(false)}
         onSyncFinished={() => {
           if (onRefresh) onRefresh();
+          fetchSupabasePatients();
           if (onShowToast) onShowToast('Priority Background Sync Completed!');
         }}
       />
+
+      {/* Supabase SQL Migration Modal */}
+      {showSqlModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-6 bg-slate-950/85 backdrop-blur-md animate-in fade-in duration-200">
+          <div className="relative w-full max-w-3xl bg-slate-950 border border-slate-800 rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[85vh]">
+            <div className="px-5 py-4 bg-slate-900 border-b border-slate-800 flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="p-2 bg-cyan-500/10 text-cyan-400 rounded-lg border border-cyan-500/20">
+                  <Database className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-white font-mono uppercase tracking-wider">
+                    Supabase SQL Table Schema (`public.patients`)
+                  </h3>
+                  <p className="text-xs text-slate-400 font-mono mt-0.5">
+                    Copy and run this in your Supabase SQL Editor to enable cloud triage
+                  </p>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setShowSqlModal(false)}
+                className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="p-5 overflow-y-auto space-y-4">
+              <div className="p-3 bg-slate-900/60 border border-slate-800 rounded-lg text-xs font-mono text-slate-300 space-y-1">
+                <span className="text-cyan-400 font-bold block">Setup Instructions:</span>
+                <div>1. Log into your Supabase Dashboard: <a href="https://supabase.com/dashboard" target="_blank" rel="noreferrer" className="text-cyan-400 underline inline-flex items-center gap-1">supabase.com <ExternalLink className="w-3 h-3" /></a></div>
+                <div>2. Open the <strong>SQL Editor</strong> tab on the left navigation bar.</div>
+                <div>3. Paste and run the SQL below to create the schema, RLS policies, and enable Realtime replication.</div>
+                <div>4. Copy your Project URL & Anon Key into <code>.env</code> in your project root.</div>
+              </div>
+
+              <div className="relative">
+                <pre className="p-4 bg-slate-900 rounded-xl border border-slate-800 text-xs font-mono text-emerald-300 overflow-x-auto leading-relaxed max-h-[340px]">
+                  {SUPABASE_PATIENTS_TABLE_SQL}
+                </pre>
+
+                <button
+                  type="button"
+                  onClick={copySqlSchema}
+                  className="absolute top-3 right-3 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-white text-xs font-mono rounded-lg transition border border-slate-700 flex items-center gap-1.5 shadow"
+                >
+                  {copiedSql ? (
+                    <>
+                      <Check className="w-3.5 h-3.5 text-emerald-400" />
+                      <span className="text-emerald-400">Copied!</span>
+                    </>
+                  ) : (
+                    <>
+                      <Copy className="w-3.5 h-3.5" />
+                      <span>Copy SQL</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+
+            <div className="px-5 py-3 bg-slate-900 border-t border-slate-800 flex items-center justify-between text-xs font-mono text-slate-400">
+              <span>Table: public.patients • Realtime: Enabled</span>
+              <button
+                type="button"
+                onClick={() => setShowSqlModal(false)}
+                className="px-4 py-1.5 bg-slate-800 hover:bg-slate-700 text-white rounded-lg transition"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
     </div>
   );

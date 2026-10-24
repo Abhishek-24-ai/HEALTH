@@ -107,12 +107,15 @@ export default function App() {
       setIsSyncing(true);
       try {
         const res = await syncWithMockServer();
-        if (res.success) {
-          showToast(`District Sync Complete: ${res.count} records replicated.`);
+        if (res.success || res.status === 'SUCCESS') {
+          const count = res.syncedCount ?? res.count ?? 0;
+          showToast(`District Cloud Sync Complete: ${count} emergency records replicated.`);
           await refreshPatients();
+        } else if (res.status === 'OFFLINE') {
+          showToast('Device is offline. Air-gap records retained in IndexedDB.');
         }
       } catch (err) {
-        showToast('Sync error: ' + err.message);
+        showToast('Sync notice: ' + err.message);
       } finally {
         setIsSyncing(false);
       }
