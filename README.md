@@ -3,10 +3,39 @@
 [![Vite](https://img.shields.io/badge/Vite-8.3-646CFF?logo=vite&logoColor=white)](https://vitejs.dev/)
 [![React](https://img.shields.io/badge/React-19.3-61DAFB?logo=react&logoColor=black)](https://react.dev/)
 [![TailwindCSS](https://img.shields.io/badge/Tailwind-v4-38B2AC?logo=tailwind-css&logoColor=white)](https://tailwindcss.com/)
+[![Express](https://img.shields.io/badge/Express-5.3-white?logo=express&logoColor=black)](https://expressjs.com/)
+[![Render](https://img.shields.io/badge/Render-Live-46E3B7?logo=render&logoColor=white)](https://abizz.onrender.com)
 [![PWA](https://img.shields.io/badge/PWA-Air--Gapped-rose)](https://web.dev/progressive-web-apps/)
 [![License](https://img.shields.io/badge/License-MIT-emerald.svg)](LICENSE)
 
 A production-ready Progressive Web Application (PWA) designed for **zero-connectivity rural emergency triage** and **air-gapped optical patient transfers**. Styled like modern clinical telemetry workstations (Linear / Epic Systems), it enables continuous triage, automated Modified Early Warning Score (MEWS) clinical decision support, and camera-to-screen optical patient handoffs with zero radio frequency emissions.
+
+---
+
+## 📁 Repository Structure
+
+```text
+HEALTH/
+├── frontend/                 # Progressive Web Application (React + Vite)
+│   ├── src/
+│   │   ├── components/       # Clinical intake, QR scanner, hospital dashboard
+│   │   ├── utils/            # Deterministic MEWS, audio alert, priority sync
+│   │   ├── api.js            # Live Render backend client (https://abizz.onrender.com)
+│   │   ├── db.js             # Offline IndexedDB store via Dexie
+│   │   └── supabaseClient.js # Supabase PostgreSQL & Realtime client
+│   ├── public/               # PWA service worker, web manifest, medical icons
+│   ├── index.html
+│   ├── package.json
+│   └── vite.config.js
+│
+├── backend/                  # Node.js Express API Service
+│   ├── server.js             # Hospital sync endpoints & emergency telemetry queue
+│   ├── package.json
+│   └── .env                  # Port configuration
+│
+├── .gitignore                # Global git ignore (node_modules, dist, .env)
+└── README.md
+```
 
 ---
 
@@ -32,7 +61,7 @@ A production-ready Progressive Web Application (PWA) designed for **zero-connect
 
 ### 4. Red-First Priority Background Sync Engine
 - Prioritizes critical emergency patients: **RED $\rightarrow$ YELLOW $\rightarrow$ GREEN**.
-- Interactive Terminal Console: Streams simulated TLS 1.3 packets, HTTP 201 responses, and server handshake IDs (`ACK-HOSP-...`).
+- Dual Replicas: Synchronizes to the live **Render Backend** (`https://abizz.onrender.com/api/sync`) and **Supabase PostgreSQL**.
 - Dynamic Connectivity Toggle in sticky top bar: `[Air-Gap Mode (Offline)] <---> [District Cloud (Online)]`.
 
 ### 5. Web Audio API Emergency Alert System
@@ -43,42 +72,28 @@ A production-ready Progressive Web Application (PWA) designed for **zero-connect
 
 ---
 
-## 🛠️ Technology Stack
-
-- **Framework**: React 19 + Vite
-- **Styling**: Tailwind CSS v4 (dark slate/zinc canvas, glassmorphism, glowing urgency borders)
-- **Local Database**: IndexedDB via `dexie`
-- **Compression**: `lz-string`
-- **QR Generation**: `qrcode.react` (SVG & Canvas for PNG download)
-- **Optical Scanner**: `html5-qrcode`
-- **Icons**: `lucide-react`
-- **Sound & Haptics**: Web Audio API & `navigator.vibrate`
-
----
-
 ## 🚀 Getting Started
 
-### 1. Clone the repository
+### 1. Frontend Setup (Client PWA)
 ```bash
-git clone <YOUR_GITHUB_REPO_URL>
-cd HEALTH
-```
-
-### 2. Install dependencies
-```bash
+cd frontend
 npm install
-```
-
-### 3. Launch the development server
-```bash
 npm run dev
 ```
 Open [http://localhost:5173](http://localhost:5173) in your browser.
 
-### 4. Build for production
+To compile for production:
 ```bash
 npm run build
 ```
+
+### 2. Backend Setup (API Service)
+```bash
+cd backend
+npm install
+node server.js
+```
+The server will listen on [http://localhost:5000](http://localhost:5000) (or live at `https://abizz.onrender.com`).
 
 ---
 
