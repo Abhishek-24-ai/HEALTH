@@ -33,21 +33,15 @@ app.use(express.json({ limit: '10mb' }));
 // In-memory queue to store synced patient records on Render
 let patientQueue = [];
 
-// Root health & service discovery
+// Root service status page
 app.get('/', (req, res) => {
-  res.json({
-    status: 'ONLINE',
-    service: 'AURA-TRIAGE Emergency Hospital Telemetry Server',
-    version: '2.4-MED',
-    endpoints: {
-      health: 'GET /api/health',
-      patients: 'GET /api/patients',
-      sync: 'POST /api/sync',
-      reset: 'DELETE /api/patients',
-    },
-    activePatients: patientQueue.length,
-    timestamp: new Date().toISOString(),
-  });
+  res.send(`
+    <div style="font-family:sans-serif; text-align:center; padding:50px;">
+      <h2>🏥 Aura Triage API Server</h2>
+      <p style="color:green; font-weight:bold;">● Status: Online & Healthy</p>
+      <p>Endpoints: <code>/api/health</code> | <code>/api/patients</code> | <code>/api/sync</code></p>
+    </div>
+  `);
 });
 
 app.get('/api/health', (req, res) => {
