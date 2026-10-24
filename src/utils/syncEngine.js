@@ -1,7 +1,9 @@
 import { db, markPatientAsSynced } from '../db';
 import { supabase, isSupabaseConfigured } from '../supabaseClient';
-import { BACKEND_BASE_URL, syncPatientsToBackend } from '../api';
+import { BACKEND_BASE_URL, DEFAULT_BACKEND_URL, syncPatientsToBackend } from '../api';
 import confetti from 'canvas-confetti';
+
+export { BACKEND_BASE_URL, DEFAULT_BACKEND_URL };
 
 /**
  * Priority Cloud Sync Engine for Aura-Triage

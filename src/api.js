@@ -4,8 +4,10 @@
  * with graceful offline timeout and fallbacks.
  */
 
+export const DEFAULT_BACKEND_URL = 'https://abizz.onrender.com';
+
 export const BACKEND_BASE_URL = (
-  import.meta.env.VITE_BACKEND_URL || 'https://abizz.onrender.com'
+  import.meta.env.VITE_BACKEND_URL || DEFAULT_BACKEND_URL
 ).replace(/\/+$/, '');
 
 /**
