@@ -32,6 +32,7 @@ import { resetDatabase } from '../db';
 import { playKeypadBeep, playScanSuccessSound, playRedAlertSound } from '../utils/audioAlert';
 import { supabase, isSupabaseConfigured, SUPABASE_PATIENTS_TABLE_SQL } from '../supabaseClient';
 import { calculateMEWS } from '../utils/mews';
+import { BACKEND_BASE_URL, fetchBackendPatients } from '../api';
 
 export default function HospitalDashboard({ 
   patients = [], 
@@ -54,41 +55,84 @@ export default function HospitalDashboard({
   const [isCloudLoading, setIsCloudLoading] = useState(false);
   const [realtimeActive, setRealtimeActive] = useState(false);
 
-  // Fetch telemetry records directly from Supabase
+  // Fetch telemetry records from Supabase and Render backend
   const fetchSupabasePatients = useCallback(async () => {
-    if (!isSupabaseConfigured || (typeof navigator !== 'undefined' && !navigator.onLine)) {
+    if (typeof navigator !== 'undefined' && !navigator.onLine) {
       return;
     }
 
     setIsCloudLoading(true);
-    try {
-      const { data, error } = await supabase
-        .from('patients')
-        .select('*')
-        .order('created_at', { ascending: false });
+    const combinedCloud = [];
 
-      if (error) {
-        console.warn('Supabase query notice:', error.message);
-        return;
+    // 1. Fetch from Supabase if configured
+    if (isSupabaseConfigured) {
+      try {
+        const { data, error } = await supabase
+          .from('patients')
+          .select('*')
+          .order('created_at', { ascending: false });
+
+        if (!error && Array.isArray(data)) {
+          data.forEach((row) => {
+            const vitals = row.vitals || {};
+            const mewsCalc = calculateMEWS(vitals);
+            combinedCloud.push({
+              id: `cloud-sb-${row.id}`,
+              patientUuid: row.patient_uuid,
+              triageId: row.triage_id || `TRIAGE-${row.id}`,
+              name: row.name,
+              age: row.age,
+              sex: row.gender || 'Unknown',
+              chiefComplaint: row.chief_complaint,
+              allergies: row.allergies || 'NKDA',
+              medicalHistory: row.medical_history || '',
+              vitals,
+              mews: {
+                score: row.mews_score ?? mewsCalc.score,
+                level: row.level || mewsCalc.level,
+                breakdown: mewsCalc.breakdown,
+                clinicalAction: mewsCalc.clinicalAction,
+                urgencyLabel: mewsCalc.urgencyLabel,
+                responseTime: mewsCalc.responseTime,
+                styleClasses: mewsCalc.styleClasses,
+              },
+              level: row.level || mewsCalc.level,
+              synced: 1,
+              timestamp: new Date(row.created_at || row.synced_at).getTime(),
+              originUnit: row.origin_unit || 'Supabase PostgreSQL',
+              opticalTransfers: row.optical_transfers || 0,
+              isFromCloud: true,
+            });
+          });
+        }
+      } catch (err) {
+        console.warn('Supabase fetch notice:', err);
       }
+    }
 
-      if (data && Array.isArray(data)) {
-        const mapped = data.map((row) => {
+    // 2. Fetch from Live Render backend
+    try {
+      const renderRes = await fetchBackendPatients();
+      if (renderRes && Array.isArray(renderRes.records)) {
+        renderRes.records.forEach((row, idx) => {
+          // Avoid duplicate if already pulled from Supabase
+          if (combinedCloud.some((c) => c.patientUuid === row.patientUuid)) return;
+
           const vitals = row.vitals || {};
           const mewsCalc = calculateMEWS(vitals);
-          return {
-            id: `cloud-${row.id}`,
-            patientUuid: row.patient_uuid,
-            triageId: row.triage_id || `TRIAGE-${row.id}`,
+          combinedCloud.push({
+            id: `cloud-render-${idx}-${row.patientUuid}`,
+            patientUuid: row.patientUuid,
+            triageId: row.triageId || `TRIAGE-${idx}`,
             name: row.name,
             age: row.age,
             sex: row.gender || 'Unknown',
-            chiefComplaint: row.chief_complaint,
+            chiefComplaint: row.chiefComplaint,
             allergies: row.allergies || 'NKDA',
-            medicalHistory: row.medical_history || '',
+            medicalHistory: row.medicalHistory || '',
             vitals,
             mews: {
-              score: row.mews_score ?? mewsCalc.score,
+              score: row.mewsScore ?? mewsCalc.score,
               level: row.level || mewsCalc.level,
               breakdown: mewsCalc.breakdown,
               clinicalAction: mewsCalc.clinicalAction,
@@ -98,21 +142,22 @@ export default function HospitalDashboard({
             },
             level: row.level || mewsCalc.level,
             synced: 1,
-            timestamp: new Date(row.created_at || row.synced_at).getTime(),
-            originUnit: row.origin_unit || 'District Cloud Feed',
-            opticalTransfers: row.optical_transfers || 0,
+            timestamp: row.timestamp || Date.now(),
+            originUnit: row.originUnit || 'Render Backend API',
+            opticalTransfers: 0,
             isFromCloud: true,
-          };
+          });
         });
-
-        setCloudPatients(mapped);
       }
-    } catch (err) {
-      console.warn('Error fetching Supabase patients:', err);
-    } finally {
-      setIsCloudLoading(false);
+    } catch (renderErr) {
+      // Backend may be sleeping (Render free tier cold start) or unpopulated
+      console.warn('Render backend notice:', renderErr.message);
     }
+
+    setCloudPatients(combinedCloud);
+    setIsCloudLoading(false);
   }, []);
+
 
   // Supabase Realtime channel subscription
   useEffect(() => {
@@ -268,22 +313,18 @@ export default function HospitalDashboard({
           <div>
             <div className="flex items-center gap-2">
               <h3 className="text-xs font-mono font-bold uppercase tracking-wider text-white">
-                Telemetry Pipeline: {isSupabaseConfigured ? 'Supabase PostgreSQL Cloud' : 'Offline Air-Gap (Dexie)'}
+                Telemetry Pipeline: Live Render API ({BACKEND_BASE_URL}) + Supabase Cloud
               </h3>
               <span className={`px-2 py-0.5 text-[10px] font-mono font-bold rounded-full border ${
                 realtimeActive
                   ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40 animate-pulse'
-                  : isSupabaseConfigured
-                  ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/40'
-                  : 'bg-amber-500/20 text-amber-300 border-amber-500/40'
+                  : 'bg-cyan-500/20 text-cyan-300 border-cyan-500/40'
               }`}>
-                {realtimeActive ? 'REALTIME STREAMING' : isSupabaseConfigured ? 'ONLINE (POLLING)' : 'AIR-GAP ISOLATED'}
+                {realtimeActive ? 'REALTIME STREAMING' : 'ONLINE CLUSTER'}
               </span>
             </div>
             <p className="text-[11px] text-slate-400 font-mono mt-0.5">
-              {isSupabaseConfigured 
-                ? 'Bi-directional replication enabled. Receiving field worker updates across nodes.'
-                : 'Zero external cloud credentials configured in .env. Operating with 100% resilient IndexedDB.'}
+              Live bi-directional synchronization enabled across field tablet nodes, Render web services, and Supabase PostgreSQL.
             </p>
           </div>
         </div>

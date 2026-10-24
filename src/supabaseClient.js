@@ -2,12 +2,15 @@ import { createClient } from '@supabase/supabase-js';
 
 /**
  * Supabase Client Initializer for Aura-Triage Cloud Replication
- * Reads securely from Vite environment variables.
+ * Reads securely from Vite environment variables with production fallbacks.
  * Provides zero-crash graceful fallback when credentials are not configured.
  */
 
-const rawUrl = import.meta.env.VITE_SUPABASE_URL;
-const rawKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+const DEFAULT_SUPABASE_URL = 'https://zmvddzdzymyzorutstix.supabase.co';
+const DEFAULT_SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InptdmRkemR6eW15em9ydXRzdGl4Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTI4MTU2OTYsImV4cCI6MjEwODM5MTY5Nn0.6ZKarCnp60h_XjXU2NBOHbGY36-j91HljnUn2VZ-Xg8';
+
+const rawUrl = import.meta.env.VITE_SUPABASE_URL || DEFAULT_SUPABASE_URL;
+const rawKey = import.meta.env.VITE_SUPABASE_ANON_KEY || DEFAULT_SUPABASE_ANON_KEY;
 
 export const supabaseUrl = typeof rawUrl === 'string' ? rawUrl.trim() : '';
 export const supabaseAnonKey = typeof rawKey === 'string' ? rawKey.trim() : '';
@@ -23,7 +26,7 @@ export const isSupabaseConfigured = Boolean(
 
 if (!isSupabaseConfigured) {
   console.warn(
-    '[AURA-TRIAGE] Supabase cloud connection inactive (VITE_SUPABASE_URL / VITE_SUPABASE_ANON_KEY not configured in .env). ' +
+    '[AURA-TRIAGE] Supabase cloud connection inactive. ' +
     'The system is operating in 100% resilient Offline Air-Gap Mode using Dexie IndexedDB.'
   );
 }

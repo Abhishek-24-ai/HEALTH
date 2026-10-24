@@ -14,6 +14,7 @@ import {
 } from 'lucide-react';
 import { syncWithMockServer, subscribeSyncEvents } from '../utils/syncEngine';
 import { isSupabaseConfigured } from '../supabaseClient';
+import { BACKEND_BASE_URL } from '../api';
 
 export default function SyncConsoleModal({ isOpen, onClose, onSyncFinished }) {
   const [logs, setLogs] = useState([]);
@@ -96,8 +97,8 @@ export default function SyncConsoleModal({ isOpen, onClose, onSyncFinished }) {
         <div className="px-5 py-2.5 bg-slate-900/60 border-b border-slate-800/80 flex items-center justify-between text-xs font-mono">
           <div className="flex items-center gap-2 text-slate-400">
             <Cpu className="w-3.5 h-3.5 text-cyan-400" />
-            <span>
-              Target: {isSupabaseConfigured ? 'Supabase PostgreSQL Cloud (Realtime Replication)' : 'District Emergency Gateway (vitals.hospital-district.net:443)'}
+            <span className="truncate max-w-xl">
+              Target: Live Render Backend ({BACKEND_BASE_URL}) + Supabase PostgreSQL
             </span>
           </div>
 

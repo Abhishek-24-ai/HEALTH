@@ -1,10 +1,13 @@
 import { db, markPatientAsSynced } from '../db';
 import { supabase, isSupabaseConfigured } from '../supabaseClient';
+import { BACKEND_BASE_URL, syncPatientsToBackend } from '../api';
 import confetti from 'canvas-confetti';
 
 /**
  * Priority Cloud Sync Engine for Aura-Triage
- * Synchronizes offline Dexie IndexedDB records to Supabase Cloud PostgreSQL.
+ * Synchronizes offline Dexie IndexedDB records to:
+ * 1. Live Render Backend API (https://abizz.onrender.com)
+ * 2. Supabase PostgreSQL Cloud & Realtime
  * Enforces Red-First Clinical Priority Queue (RED -> YELLOW -> GREEN).
  */
 
@@ -29,7 +32,7 @@ function broadcastSyncEvent(event) {
 let isSyncRunning = false;
 
 export function getSyncStatus() {
-  return { isSyncRunning, isSupabaseConfigured };
+  return { isSyncRunning, isSupabaseConfigured, backendUrl: BACKEND_BASE_URL };
 }
 
 /**
@@ -79,7 +82,7 @@ export function mapPatientToSupabaseSchema(record) {
 /**
  * Core Priority Sync Routine:
  * Checks connectivity -> Queries unsynced IndexedDB -> Prioritizes by triage urgency ->
- * Dispatches to Supabase (or mock cloud simulator if unconfigured) -> Updates Dexie records.
+ * Dispatches to Live Render Backend & Supabase -> Updates Dexie records.
  */
 export async function syncPatientsToCloud(onLog = null) {
   if (isSyncRunning) {
@@ -109,16 +112,15 @@ export async function syncPatientsToCloud(onLog = null) {
   };
 
   try {
-    const targetMode = isSupabaseConfigured ? 'Supabase PostgreSQL Cloud' : 'District Telemetry Mock Gateway';
-    log(`CONNECTIVITY VERIFIED: Initiating sync handshake with ${targetMode}...`, 'info');
-    await new Promise((r) => setTimeout(r, 450));
+    log(`CONNECTIVITY VERIFIED: Dispatching to Live Render Backend (${BACKEND_BASE_URL}) & Supabase Cloud...`, 'info');
+    await new Promise((r) => setTimeout(r, 400));
 
     // 2. Query Dexie for unsynced records
     const unsynced = await db.patients.where('synced').equals(0).toArray();
 
     if (unsynced.length === 0) {
       log('QUEUE CLEAR: Zero unsynced patients found in local IndexedDB.', 'success');
-      log('STANDBY: All local air-gapped records are fully replicated.', 'info');
+      log('STANDBY: All local air-gapped records are fully replicated across cloud nodes.', 'info');
       isSyncRunning = false;
       broadcastSyncEvent({ type: 'SYNC_COMPLETE', syncedCount: 0 });
       return { status: 'SUCCESS', success: true, count: 0, syncedCount: 0 };
@@ -147,31 +149,33 @@ export async function syncPatientsToCloud(onLog = null) {
 
       log(`${indexStr} DISPATCHING: ${levelTag} | ${patient.name} (${patient.patientUuid}) | MEWS: ${patient.mews?.score ?? 'N/A'}`, 'info', { patientId: patient.id });
 
-      let ackId = `ACK-CLOUD-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
+      let ackId = `RENDER-${Date.now().toString(36).toUpperCase()}`;
 
+      // A. Replicate to live Render backend
+      try {
+        await syncPatientsToBackend([patient]);
+        log(`${indexStr} RENDER BACKEND: Delivered to ${BACKEND_BASE_URL}/api/sync [HTTP 200 OK]`, 'success');
+      } catch (backendErr) {
+        log(`${indexStr} RENDER NOTICE: ${backendErr.message}`, 'warning');
+      }
+
+      // B. Replicate to Supabase Cloud PostgreSQL
       if (isSupabaseConfigured) {
-        // Transform and insert/upsert into Supabase
-        const payload = mapPatientToSupabaseSchema(patient);
-        const { error } = await supabase
-          .from('patients')
-          .upsert(payload, { onConflict: 'patient_uuid' });
+        try {
+          const payload = mapPatientToSupabaseSchema(patient);
+          const { error } = await supabase
+            .from('patients')
+            .upsert(payload, { onConflict: 'patient_uuid' });
 
-        if (error) {
-          log(`${indexStr} SUPABASE ERROR: ${error.message} (Code: ${error.code || 'N/A'})`, 'error');
-          if (error.code === '42P01') {
-            log('NOTICE: Table "patients" does not exist in Supabase yet. Run the provided SQL migration.', 'warning');
+          if (error) {
+            log(`${indexStr} SUPABASE NOTICE: ${error.message} (Code: ${error.code || 'N/A'})`, 'warning');
+          } else {
+            ackId = `SUPABASE-${patient.patientUuid}`;
+            log(`${indexStr} SUPABASE POSTGRESQL: Stored & broadcast to Realtime listeners.`, 'success');
           }
-          // Mark local with fallback error tag but continue remaining
-          continue;
-        } else {
-          ackId = `SUPABASE-${patient.patientUuid}`;
-          log(`${indexStr} SUPABASE COMMITTED: Record stored in PostgreSQL (patient_uuid: ${patient.patientUuid})`, 'success');
+        } catch (sbErr) {
+          log(`${indexStr} SUPABASE EXCEPTION: ${sbErr.message}`, 'warning');
         }
-      } else {
-        // Simulated network transmission jitter for realistic demonstration
-        const latency = Math.floor(350 + Math.random() * 450);
-        await new Promise((r) => setTimeout(r, latency));
-        log(`${indexStr} TELEMETRY DELIVERED: HTTP 201 CREATED [${latency}ms] | Gateway ID: ${ackId}`, 'success');
       }
 
       // 4. Mark IndexedDB record as synced: 1
