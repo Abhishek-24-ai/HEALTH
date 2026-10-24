@@ -32,7 +32,7 @@ import { resetDatabase } from '../db';
 import { playKeypadBeep, playScanSuccessSound, playRedAlertSound } from '../utils/audioAlert';
 import { supabase, isSupabaseConfigured, SUPABASE_PATIENTS_TABLE_SQL } from '../supabaseClient';
 import { calculateMEWS } from '../utils/mews';
-import { BACKEND_BASE_URL, fetchBackendPatients } from '../api';
+import { BACKEND_BASE_URL, fetchBackendPatients, resetBackendPatients } from '../api';
 
 export default function HospitalDashboard({ 
   patients = [], 
@@ -275,13 +275,18 @@ export default function HospitalDashboard({
     return (sum / combinedPatients.length).toFixed(1);
   }, [combinedPatients]);
 
-  const handleResetDemoData = async () => {
-    if (confirm('Reset local database back to standard demonstration telemetry dataset?')) {
+  const handleClearQueue = async () => {
+    if (confirm('Clear all patient records from the emergency triage queue?')) {
       await resetDatabase();
+      try {
+        await resetBackendPatients();
+      } catch (e) {}
+      setCloudPatients([]);
       if (onRefresh) onRefresh();
-      if (onShowToast) onShowToast('Database reset to clean demo state.');
+      if (onShowToast) onShowToast('Emergency triage queue cleared to zero.');
     }
   };
+
 
   const copySqlSchema = async () => {
     try {
@@ -602,12 +607,13 @@ export default function HospitalDashboard({
 
             <button
               type="button"
-              onClick={handleResetDemoData}
-              title="Reset Database to Clean Demo Set"
+              onClick={handleClearQueue}
+              title="Clear All Patients (Reset Queue)"
               className="p-1.5 bg-slate-950 hover:bg-slate-800 text-slate-400 hover:text-white rounded-lg border border-slate-800 transition"
             >
               <RotateCcw className="w-3.5 h-3.5" />
             </button>
+
           </div>
 
         </div>

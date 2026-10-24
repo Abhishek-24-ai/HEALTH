@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { 
   getAllPatients, 
-  seedDemoPatientsIfEmpty, 
   getUnsyncedPatients 
 } from './db';
 import { 
@@ -42,10 +41,9 @@ export default function App() {
   const [muted, setMuted] = useState(isAudioMuted());
   const [isSyncing, setIsSyncing] = useState(false);
 
-  // Load patients and seed demo records if first time
+  // Load registered patients from local IndexedDB
   const refreshPatients = useCallback(async () => {
     try {
-      await seedDemoPatientsIfEmpty();
       const records = await getAllPatients();
       setPatients(records);
     } catch (err) {

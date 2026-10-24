@@ -110,126 +110,23 @@ export async function deletePatientRecord(id) {
 }
 
 /**
- * Seed sample field hospital patients if database is freshly initialized
+ * No-op: Demo data auto-seeding removed per user configuration.
+ * Real incoming air-gap transfers and intake registrations will populate the database.
  */
 export async function seedDemoPatientsIfEmpty() {
-  const count = await db.patients.count();
-  if (count > 0) return false;
-
-  const now = Date.now();
-  const demoSeed = [
-    {
-      patientUuid: 'PT-SEPSIS-774A',
-      triageId: 'TRIAGE-9102',
-      name: 'Elena Rostova',
-      age: 48,
-      sex: 'Female',
-      chiefComplaint: 'Altered mental status, severe rigors, septic shock secondary to acute pyelonephritis',
-      allergies: 'Penicillin, Sulfa',
-      medicalHistory: 'Type 2 Diabetes, Splenectomy',
-      vitals: {
-        systolicBP: 65,
-        diastolicBP: 40,
-        heartRate: 138,
-        respRate: 32,
-        temperature: 39.4,
-        avpu: 'V',
-        spo2: 89,
-        bloodGlucose: 215,
-      },
-      synced: 0,
-      timestamp: now - 18 * 60 * 1000,
-      originUnit: 'Forward Outpost Charlie',
-    },
-    {
-      patientUuid: 'PT-TRAUMA-410B',
-      triageId: 'TRIAGE-8841',
-      name: 'Marcus Brody',
-      age: 29,
-      sex: 'Male',
-      chiefComplaint: 'High-speed blast/debris trauma, unstable pelvic girdle, blunt abdominal trauma',
-      allergies: 'NKDA',
-      medicalHistory: 'None',
-      vitals: {
-        systolicBP: 78,
-        diastolicBP: 48,
-        heartRate: 132,
-        respRate: 28,
-        temperature: 34.6,
-        avpu: 'P',
-        spo2: 91,
-        bloodGlucose: 110,
-      },
-      synced: 0,
-      timestamp: now - 34 * 60 * 1000,
-      originUnit: 'Mobile Field Ambulance 3',
-    },
-    {
-      patientUuid: 'PT-PEDIATRIC-102C',
-      triageId: 'TRIAGE-7320',
-      name: 'Mateo Morales',
-      age: 7,
-      sex: 'Male',
-      chiefComplaint: 'Persistent high fever, severe dehydration, lethargy, decreased skin turgor',
-      allergies: 'NKDA',
-      medicalHistory: 'Asthma',
-      vitals: {
-        systolicBP: 98,
-        diastolicBP: 62,
-        heartRate: 112,
-        respRate: 22,
-        temperature: 39.1,
-        avpu: 'A',
-        spo2: 96,
-        bloodGlucose: 104,
-      },
-      synced: 1,
-      timestamp: now - 65 * 60 * 1000,
-      originUnit: 'Rural Health Sub-Center 14',
-    },
-    {
-      patientUuid: 'PT-STABLE-901D',
-      triageId: 'TRIAGE-6140',
-      name: 'Amara Vance',
-      age: 34,
-      sex: 'Female',
-      chiefComplaint: 'Mild sprained left ankle during field evacuation, alert and ambulatory',
-      allergies: 'Latex',
-      medicalHistory: 'None',
-      vitals: {
-        systolicBP: 122,
-        diastolicBP: 78,
-        heartRate: 72,
-        respRate: 14,
-        temperature: 36.8,
-        avpu: 'A',
-        spo2: 99,
-        bloodGlucose: 92,
-      },
-      synced: 1,
-      timestamp: now - 120 * 60 * 1000,
-      originUnit: 'Rural Health Sub-Center 14',
-    },
-  ];
-
-  for (const item of demoSeed) {
-    const mews = calculateMEWS(item.vitals);
-    await db.patients.add({
-      ...item,
-      level: mews.level,
-      mews,
-      createdAt: new Date(item.timestamp).toISOString(),
-      opticalTransfers: 1,
-    });
-  }
-
-  return true;
+  return false;
 }
 
 /**
- * Resets database back to clean demo dataset
+ * Resets database back to clean empty state
  */
 export async function resetDatabase() {
   await db.patients.clear();
-  return await seedDemoPatientsIfEmpty();
+  return true;
 }
+
+export async function clearAllPatients() {
+  await db.patients.clear();
+  return true;
+}
+
